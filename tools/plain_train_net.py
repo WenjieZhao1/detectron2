@@ -32,6 +32,7 @@ from detectron2.data import (
     MetadataCatalog,
     build_detection_test_loader,
     build_detection_train_loader,
+    build_OE_detection_train_loader,
 )
 from detectron2.engine import default_argument_parser, default_setup, default_writers, launch
 from detectron2.evaluation import (
@@ -49,13 +50,98 @@ from detectron2.evaluation import (
 from detectron2.modeling import build_model
 from detectron2.solver import build_lr_scheduler, build_optimizer
 from detectron2.utils.events import EventStorage
-
+from config import config
+import json, cv2
+from detectron2.structures import BoxMode
+from detectron2.data import MetadataCatalog, DatasetCatalog
+import random
+import numpy as np
 logger = logging.getLogger("detectron2")
+import sys
+sys.path.append('/people/cs/w/wxz220013/OOD/detectron2/detectron2/data/datasets')
+from detectron2.data.datasets.cityscapes_coco import register_OE_dataset, register_score_dataset
+from data_loader import get_mix_loader
 
+###############################################OE dataset
+from detectron2.structures import BoxMode
+
+def get_OE_offline(img_dir,split):
+    json_file = os.path.join(img_dir, "ood.json")
+    with open(json_file) as f:
+        imgs_anns = json.load(f)
+
+    dataset_dicts = []
+    if split == "val":
+        imgs_anns = imgs_anns[0:100]
+    for idx, v in enumerate(imgs_anns):
+        record = {}
+        filename = os.path.join(img_dir, "offline_dataset", v["file_name"])
+        new_filename = os.path.splitext(filename)[0] + '.png'
+        height, width = cv2.imread(new_filename).shape[:2]
+        record["file_name"] = filename
+        record["image_id"] = idx
+        record["height"] = height
+        record["width"] = width
+        annos = v["annotations"]
+        objs = []
+        obj = {
+            "bbox": [annos['bbox'][0], annos['bbox'][1], annos['bbox'][2], annos['bbox'][3]],
+            "bbox_mode": BoxMode.XYXY_ABS,
+            "category_id": 0,
+        }
+        objs.append(obj)
+        record["annotations"] = objs
+        dataset_dicts.append(record)
+    return dataset_dicts
+
+for d in ["train", "val"]:
+    DatasetCatalog.register("OOD_" + d, lambda d=d: get_OE_offline("/people/cs/w/wxz220013/OOD/meta-ood/COCO/annotations",d))
+    MetadataCatalog.get("OOD_" + d).set(thing_classes=["OOD"])
+balloon_metadata = MetadataCatalog.get("OOD_train")
+##############################################
+
+###############################################score dataset
+from detectron2.structures import BoxMode
+
+def get_score_offline(img_dir,split):
+    json_file = os.path.join(img_dir, "ood.json")
+    with open(json_file) as f:
+        imgs_anns = json.load(f)
+
+    dataset_dicts = []
+    if split == "val":
+        imgs_anns = imgs_anns[0:100]
+    for idx, v in enumerate(imgs_anns):
+        record = {}
+        filename = os.path.join(img_dir, "offline_dataset_score", v["file_name"])
+        filename = filename[:-3]+'npz'
+        height, width = 700, 700
+        record["file_name"] = filename
+        record["image_id"] = idx
+        record["height"] = height
+        record["width"] = width
+        annos = v["annotations"]
+        objs = []
+        obj = {
+            "bbox": [annos['bbox'][0], annos['bbox'][1], annos['bbox'][2], annos['bbox'][3]],
+            "bbox_mode": BoxMode.XYXY_ABS,
+            "category_id": 0,
+        }
+        objs.append(obj)
+        record["annotations"] = objs
+        dataset_dicts.append(record)
+    return dataset_dicts
+
+for d in ["train", "val"]:
+    DatasetCatalog.register("OOD_score_" + d, lambda d=d: get_score_offline("/data/wxz220013/COCO/annotations",d))
+    MetadataCatalog.get("OOD_score_" + d).set(thing_classes=["OOD"])
+balloon_metadata = MetadataCatalog.get("score_train")
+##############################################
 
 def get_evaluator(cfg, dataset_name, output_folder=None):
     """
     Create evaluator(s) for a given dataset.
+
     This uses the special metadata "evaluator_type" associated with each builtin dataset.
     For your own dataset, you can simply create an evaluator manually in your
     script and do not have to worry about the hacky if-else logic here.
@@ -97,9 +183,10 @@ def do_test(cfg, model):
     results = OrderedDict()
     for dataset_name in cfg.DATASETS.TEST:
         data_loader = build_detection_test_loader(cfg, dataset_name)
-        evaluator = get_evaluator(
-            cfg, dataset_name, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name)
-        )
+        # evaluator = get_evaluator(
+        #     cfg, dataset_name, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name)
+        # )
+        evaluator = COCOEvaluator("OOD_train", output_dir="./output")     ###OOD_test
         results_i = inference_on_dataset(model, data_loader, evaluator)
         results[dataset_name] = results_i
         if comm.is_main_process():
@@ -132,17 +219,19 @@ def do_train(cfg, model, resume=False):
     # compared to "train_net.py", we do not support accurate timing and
     # precise BN here, because they are not trivial to implement in a small training loop
     data_loader = build_detection_train_loader(cfg)
+    # data_loader = build_OE_detection_train_loader(cfg)
+    # train_loader, train_sampler, val_loader= get_mix_loader(gpu=1, config=config, proba_factor=1)
+    # for d in random.sample(dataset_dicts, 3):
+    #     print(d["file_name"])
+    #     img = cv2.imread(d["file_name"])
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
-        for data, iteration in zip(data_loader, range(start_iter, max_iter)):
-            print("xxxx",data)
-            exit()
+        for data, iteration in zip(data_loader, range(start_iter, max_iter)):## data[0]['image'].shape=torch.Size([3, 768, 819])
+        # for data, iteration in zip(train_loader, range(start_iter, max_iter)):  
             storage.iter = iteration
-
             loss_dict = model(data)
             losses = sum(loss_dict.values())
             assert torch.isfinite(losses).all(), loss_dict
-
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
             losses_reduced = sum(loss for loss in loss_dict_reduced.values())
             if comm.is_main_process():
@@ -187,7 +276,7 @@ def setup(args):
 
 def main(args):
     cfg = setup(args)
-
+    # register_OE_dataset()
     model = build_model(cfg)
     logger.info("Model:\n{}".format(model))
     if args.eval_only:

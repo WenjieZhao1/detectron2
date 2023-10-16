@@ -186,7 +186,6 @@ def register_all_cityscapes(root):
         meta = _get_builtin_metadata("cityscapes")
         image_dir = os.path.join(root, image_dir)
         gt_dir = os.path.join(root, gt_dir)
-
         inst_key = key.format(task="instance_seg")
         DatasetCatalog.register(
             inst_key,
@@ -253,7 +252,8 @@ if __name__.endswith(".builtin"):
     _root = os.path.expanduser(os.getenv("DETECTRON2_DATASETS", "datasets"))
     register_all_coco(_root)
     register_all_lvis(_root)
-    register_all_cityscapes(_root)
+    ################################register_all_cityscapes(_root)
+    register_all_cityscapes('/people/cs/w/wxz220013/OOD/detectron2/datasets')
     register_all_cityscapes_panoptic(_root)
     register_all_pascal_voc(_root)
     register_all_ade20k(_root)

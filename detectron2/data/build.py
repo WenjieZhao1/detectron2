@@ -169,6 +169,7 @@ def print_instances_class_histogram(dataset_dicts, class_names):
         class_names (list[str]): list of class names (zero-indexed).
     """
     num_classes = len(class_names)
+    print(class_names)
     hist_bins = np.arange(num_classes + 1)
     histogram = np.zeros((num_classes,), dtype=int)
     for entry in dataset_dicts:
@@ -236,11 +237,11 @@ def get_detection_dataset_dicts(
     Returns:
         list[dict]: a list of dicts following the standard dataset dict format.
     """
+
     if isinstance(names, str):
         names = [names]
     assert len(names), names
     dataset_dicts = [DatasetCatalog.get(dataset_name) for dataset_name in names]
-
     if isinstance(dataset_dicts[0], torchdata.Dataset):
         if len(dataset_dicts) > 1:
             # ConcatDataset does not work for iterable style dataset.
@@ -267,7 +268,6 @@ def get_detection_dataset_dicts(
         dataset_dicts = filter_images_with_only_crowd_annotations(dataset_dicts)
     if min_keypoints > 0 and has_instances:
         dataset_dicts = filter_images_with_few_keypoints(dataset_dicts, min_keypoints)
-
     if check_consistency and has_instances:
         try:
             class_names = MetadataCatalog.get(names[0]).thing_classes
@@ -275,7 +275,6 @@ def get_detection_dataset_dicts(
             print_instances_class_histogram(dataset_dicts, class_names)
         except AttributeError:  # class names are not available for this dataset
             pass
-
     assert len(dataset_dicts), "No valid data found in {}.".format(",".join(names))
     return dataset_dicts
 
@@ -319,7 +318,6 @@ def build_batch_data_loader(
         assert sampler is None, "sampler must be None if dataset is IterableDataset"
     else:
         dataset = ToIterableDataset(dataset, sampler, shard_chunk_size=batch_size)
-
     if aspect_ratio_grouping:
         assert drop_last, "Aspect ratio grouping will drop incomplete batches."
         data_loader = torchdata.DataLoader(
@@ -429,7 +427,6 @@ def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None):
             proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN if cfg.MODEL.LOAD_PROPOSALS else None,
         )
         _log_api_usage("dataset." + cfg.DATASETS.TRAIN[0])
-
     if mapper is None:
         mapper = DatasetMapper(cfg, True)
 
@@ -516,7 +513,69 @@ def build_detection_train_loader(
         dataset = DatasetFromList(dataset, copy=False)
     if mapper is not None:
         dataset = MapDataset(dataset, mapper)
+    if isinstance(dataset, torchdata.IterableDataset):
+        assert sampler is None, "sampler must be None if dataset is IterableDataset"
+    else:
+        if sampler is None:
+            sampler = TrainingSampler(len(dataset))
+        assert isinstance(sampler, torchdata.Sampler), f"Expect a Sampler but got {type(sampler)}"
+    return build_batch_data_loader(
+        dataset,
+        sampler,
+        total_batch_size,
+        aspect_ratio_grouping=aspect_ratio_grouping,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+    )
 
+@configurable(from_config=_train_loader_from_config)
+
+def build_OE_detection_train_loader(
+    dataset,
+    *,
+    mapper,
+    sampler=None,
+    total_batch_size,
+    aspect_ratio_grouping=True,
+    num_workers=0,
+    collate_fn=None,
+):
+    """
+    Build a dataloader for object detection with some default features.
+
+    Args:
+        dataset (list or torch.utils.data.Dataset): a list of dataset dicts,
+            or a pytorch dataset (either map-style or iterable). It can be obtained
+            by using :func:`DatasetCatalog.get` or :func:`get_detection_dataset_dicts`.
+        mapper (callable): a callable which takes a sample (dict) from dataset and
+            returns the format to be consumed by the model.
+            When using cfg, the default choice is ``DatasetMapper(cfg, is_train=True)``.
+        sampler (torch.utils.data.sampler.Sampler or None): a sampler that produces
+            indices to be applied on ``dataset``.
+            If ``dataset`` is map-style, the default sampler is a :class:`TrainingSampler`,
+            which coordinates an infinite random shuffle sequence across all workers.
+            Sampler must be None if ``dataset`` is iterable.
+        total_batch_size (int): total batch size across all workers.
+        aspect_ratio_grouping (bool): whether to group images with similar
+            aspect ratio for efficiency. When enabled, it requires each
+            element in dataset be a dict with keys "width" and "height".
+        num_workers (int): number of parallel data loading workers
+        collate_fn: a function that determines how to do batching, same as the argument of
+            `torch.utils.data.DataLoader`. Defaults to do no collation and return a list of
+            data. No collation is OK for small batch size and simple data structures.
+            If your batch size is large and each sample contains too many small tensors,
+            it's more efficient to collate them in data loader.
+
+    Returns:
+        torch.utils.data.DataLoader:
+            a dataloader. Each output from it is a ``list[mapped_element]`` of length
+            ``total_batch_size / num_workers``, where ``mapped_element`` is produced
+            by the ``mapper``.
+    """
+    if isinstance(dataset, list):
+        dataset = DatasetFromList(dataset, copy=False)
+    if mapper is not None:
+        dataset = MapDataset(dataset, mapper)
     if isinstance(dataset, torchdata.IterableDataset):
         assert sampler is None, "sampler must be None if dataset is IterableDataset"
     else:

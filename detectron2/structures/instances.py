@@ -135,7 +135,6 @@ class Instances:
                 raise IndexError("Instances index out of range!")
             else:
                 item = slice(item, None, len(self))
-
         ret = Instances(self._image_size)
         for k, v in self._fields.items():
             ret.set(k, v[item])
